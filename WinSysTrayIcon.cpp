@@ -1,15 +1,13 @@
+#include "pch.h"
+#include "WinSysTrayIcon.h"
 #include "resource.h"
-
-#include <windows.h>
-#include <shellapi.h>
-#include <shlobj.h>
-#include <shlwapi.h>
-#include <commctrl.h>
-#include <string>
-#include <vector>
 #include <map>
-
+#include <string>
 #include <filesystem>
+#include <shlwapi.h>
+#include <shobjidl.h>
+#include <shellapi.h>
+
 namespace fs = std::filesystem;
 
 #pragma comment(lib, "shell32.lib")
@@ -21,18 +19,9 @@ namespace fs = std::filesystem;
 
 std::map<int, std::wstring> menuCommandMap;
 int currentMenuID = ID_TRAY_BASE;
-
 HINSTANCE hInst;
-
-// Shortcut directory. Read from ini file
 std::wstring rootShortcutDir;
 
-// Forward declarations
-LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
-void ShowContextMenu(HWND hwnd);
-void ShowAppMenu(HWND hwnd);
-void PopulateMenuFromFolder(HMENU hMenu, const std::wstring& folder, bool recurse);
-void ExecuteShortcut(const std::wstring& path);
 HICON GetSmallIcon(const std::wstring& filePath);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -109,7 +98,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		else if (LOWORD(lParam) == WM_RBUTTONUP) {
 			ShowContextMenu(hwnd);
 		}
-
 	}
 	else if (msg == WM_COMMAND) {
 		if (LOWORD(wParam) == ID_SETTINGS_EXIT) {
@@ -118,7 +106,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		else {
 			int id = LOWORD(wParam);
 			if (menuCommandMap.count(id)) {
-				ExecuteShortcut(menuCommandMap[id]);
+				// Changed function name to match its multi-format capability
+				LaunchItem(menuCommandMap[id]);
 			}
 		}
 	}
@@ -139,40 +128,29 @@ void ShowAppMenu(HWND hwnd) {
 
 	PopulateMenuFromFolder(hMenu, rootShortcutDir, true);
 
-	//AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-	//AppendMenu(hMenu, MF_STRING, ID_SETTINGS_EXIT, L"Exit");
-
 	SetForegroundWindow(hwnd);
 	TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
 	DestroyMenu(hMenu);
 }
 
-
 void ShowContextMenu(HWND hwnd) {
-	/*
 	POINT pt;
 	GetCursorPos(&pt);
-
-	//HMENU hMenu = CreatePopupMenu();
-	HMENU hMenu = LoadMenu(hInst, MAKEINTRESOURCE(IDR_MENU_TRAY));
-	HMENU hSubMenu = GetSubMenu(hMenu, 0);
-	
-	AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
-	AppendMenu(hSubMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
-
 	SetForegroundWindow(hwnd);
-	TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
-	DestroyMenu(hMenu);
-	*/
-	POINT pt;
-	GetCursorPos(&pt);
-	SetForegroundWindow(hwnd); // Needed for TrackPopupMenu
 	HMENU hMenu = LoadMenu(hInst, MAKEINTRESOURCE(IDR_MENU_TRAY));
 	HMENU hSubMenu = GetSubMenu(hMenu, 0);
 	TrackPopupMenu(hSubMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
 	DestroyMenu(hMenu);
-
 }
+
+#include <vector>
+
+// Define a simple structure to hold our menu entry items
+struct MenuEntryItem {
+	std::wstring name;
+	std::wstring fullPath;
+};
+
 void PopulateMenuFromFolder(HMENU hMenu, const std::wstring& folder, bool recurse) {
 	WIN32_FIND_DATA findData;
 	std::wstring searchPath = folder + L"\\*";
@@ -181,6 +159,11 @@ void PopulateMenuFromFolder(HMENU hMenu, const std::wstring& folder, bool recurs
 	if (hFind == INVALID_HANDLE_VALUE)
 		return;
 
+	// Two lists to separate directories from executables/shortcuts
+	std::vector<MenuEntryItem> folderList;
+	std::vector<MenuEntryItem> fileList;
+
+	// 1. Separate entries based on file attributes
 	do {
 		std::wstring name = findData.cFileName;
 		if (name == L"." || name == L"..")
@@ -188,37 +171,49 @@ void PopulateMenuFromFolder(HMENU hMenu, const std::wstring& folder, bool recurs
 
 		std::wstring fullPath = folder + L"\\" + name;
 
-		if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY && recurse) {
-			HMENU subMenu = CreatePopupMenu();
-			PopulateMenuFromFolder(subMenu, fullPath, recurse);
-			InsertMenu(hMenu, -1, MF_BYPOSITION | MF_POPUP, (UINT_PTR)subMenu, name.c_str());
-		}
-		else if (PathMatchSpec(name.c_str(), L"*.lnk")) {
-			HICON hIcon = GetSmallIcon(fullPath);
-			MENUITEMINFO mii = { sizeof(MENUITEMINFO) };
-			mii.fMask = MIIM_ID | MIIM_STRING | MIIM_FTYPE | MIIM_BITMAP;
-			mii.fType = MFT_STRING;
-			mii.wID = currentMenuID;
-			// Remove extension
-			std::wstring base_name = findData.cFileName;
-			auto menuitem = base_name.substr(0, base_name.length() - 4);
-
-			mii.dwTypeData = (LPWSTR)menuitem.c_str();
-
-			HBITMAP hBmp = NULL;
-			if (hIcon) {
-				ICONINFO iconInfo;
-				GetIconInfo(hIcon, &iconInfo);
-				hBmp = iconInfo.hbmColor;
-				mii.hbmpItem = hBmp;
+		if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+			if (recurse) {
+				folderList.push_back({ name, fullPath });
 			}
-
-			InsertMenuItem(hMenu, -1, TRUE, &mii);
-			menuCommandMap[currentMenuID++] = fullPath;
+		}
+		else if (PathMatchSpec(name.c_str(), L"*.lnk") || PathMatchSpec(name.c_str(), L"*.exe")) {
+			fileList.push_back({ name, fullPath });
 		}
 	} while (FindNextFile(hFind, &findData));
 
 	FindClose(hFind);
+
+	// 2. Add Folders to the menu first (Maintains natural NTFS sort order)
+	for (const auto& dir : folderList) {
+		HMENU subMenu = CreatePopupMenu();
+		PopulateMenuFromFolder(subMenu, dir.fullPath, recurse);
+		InsertMenu(hMenu, -1, MF_BYPOSITION | MF_POPUP, (UINT_PTR)subMenu, dir.name.c_str());
+	}
+
+	// 3. Add Files, Hard links, and Symlinks next
+	for (const auto& file : fileList) {
+		HICON hIcon = GetSmallIcon(file.fullPath);
+		MENUITEMINFO mii = { sizeof(MENUITEMINFO) };
+		mii.fMask = MIIM_ID | MIIM_STRING | MIIM_FTYPE | MIIM_BITMAP;
+		mii.fType = MFT_STRING;
+		mii.wID = currentMenuID;
+
+		// Remove extension cleanly (.lnk or .exe)
+		std::wstring base_name = file.name;
+		auto menuitem = base_name.substr(0, base_name.length() - 4);
+		mii.dwTypeData = (LPWSTR)menuitem.c_str();
+
+		HBITMAP hBmp = NULL;
+		if (hIcon) {
+			ICONINFO iconInfo;
+			GetIconInfo(hIcon, &iconInfo);
+			hBmp = iconInfo.hbmColor;
+			mii.hbmpItem = hBmp;
+		}
+
+		InsertMenuItem(hMenu, -1, TRUE, &mii);
+		menuCommandMap[currentMenuID++] = file.fullPath;
+	}
 }
 
 HICON GetSmallIcon(const std::wstring& filePath) {
@@ -228,24 +223,56 @@ HICON GetSmallIcon(const std::wstring& filePath) {
 	return sfi.hIcon;
 }
 
-void ExecuteShortcut(const std::wstring& path) {
-	IShellLink* psl = NULL;
-	HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
-		IID_IShellLink, (LPVOID*)&psl);
-	if (SUCCEEDED(hr)) {
-		IPersistFile* ppf = NULL;
-		hr = psl->QueryInterface(IID_IPersistFile, (LPVOID*)&ppf);
+// UPDATED: Completely handles .lnk, native .exe, hard links, and symlinks seamlessly
+void LaunchItem(const std::wstring& path) {
+	fs::path itemPath(path);
+
+	// Case 1: Standard Windows Shortcut (.lnk)
+	if (itemPath.extension() == L".lnk") {
+		IShellLink* psl = NULL;
+		HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
+			IID_IShellLink, (LPVOID*)&psl);
 		if (SUCCEEDED(hr)) {
-			hr = ppf->Load(path.c_str(), STGM_READ);
+			IPersistFile* ppf = NULL;
+			hr = psl->QueryInterface(IID_IPersistFile, (LPVOID*)&ppf);
 			if (SUCCEEDED(hr)) {
-				psl->Resolve(NULL, SLR_NO_UI);
-				WIN32_FIND_DATA wfd{ 0 };
-				WCHAR szTarget[MAX_PATH];
-				psl->GetPath(szTarget, MAX_PATH, &wfd, SLGP_UNCPRIORITY);
-				ShellExecute(NULL, L"open", szTarget, NULL, NULL, SW_SHOWNORMAL);
+				hr = ppf->Load(path.c_str(), STGM_READ);
+				if (SUCCEEDED(hr)) {
+					psl->Resolve(NULL, SLR_NO_UI);
+					WIN32_FIND_DATA wfd{ 0 };
+					WCHAR szTarget[MAX_PATH];
+					psl->GetPath(szTarget, MAX_PATH, &wfd, SLGP_UNCPRIORITY);
+					ShellExecute(NULL, L"open", szTarget, NULL, NULL, SW_SHOWNORMAL);
+				}
+				ppf->Release();
 			}
-			ppf->Release();
+			psl->Release();
 		}
-		psl->Release();
+	}
+	// Case 2: Executable, Hard link, or Symbolic Link (.exe)
+	else if (itemPath.extension() == L".exe") {
+		fs::path pathToLaunch = itemPath;
+		fs::path workingDirectory = itemPath.parent_path();
+
+		// Check if the filesystem entry is specifically a Symbolic Link
+		if (fs::is_symlink(itemPath)) {
+			fs::path trueTarget = fs::read_symlink(itemPath);
+			// Resolve relative symlink offsets to full absolute structures
+			if (trueTarget.is_relative()) {
+				trueTarget = itemPath.parent_path() / trueTarget;
+			}
+			pathToLaunch = trueTarget;
+			workingDirectory = trueTarget.parent_path(); // Crucial: Fixes target app companion dependency queries!
+		}
+
+		// Launch via ShellExecuteW using explicit target environment parameters
+		ShellExecuteW(
+			NULL,
+			L"open",
+			pathToLaunch.c_str(),
+			NULL,
+			workingDirectory.c_str(), // Directing CWD cleanly ensures hardlinks & symlinks resolve assets accurately
+			SW_SHOWNORMAL
+		);
 	}
 }
