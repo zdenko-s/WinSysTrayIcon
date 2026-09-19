@@ -14,8 +14,11 @@ namespace fs = std::filesystem;
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "comctl32.lib")
 
-#define WM_TRAYICON (WM_USER + 1)
-#define ID_TRAY_BASE 2000
+// Define a simple structure to hold our menu entry items
+struct MenuEntryItem {
+	std::wstring name;
+	std::wstring fullPath;
+};
 
 std::map<int, std::wstring> menuCommandMap;
 int currentMenuID = ID_TRAY_BASE;
@@ -103,10 +106,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		if (LOWORD(wParam) == ID_SETTINGS_EXIT) {
 			PostQuitMessage(0);
 		}
+		else if (LOWORD(wParam) == ID_SETTINGS_FOLDER) {
+			std::wstring selectedFolder;
+			if (PickFolderDialog(hwnd, selectedFolder)) {
+				// Update the active system runtime string allocation cache
+				rootShortcutDir = selectedFolder;
+
+				// Resolve the path to the relative target configuration file location
+				wchar_t iniFileName[MAX_PATH];
+				if (GetModuleFileName(nullptr, iniFileName, MAX_PATH)) {
+					fs::path iniFile = fs::path{ iniFileName };
+					iniFile.replace_extension("ini");
+
+					// Flush data updates permanently into storage
+					WritePrivateProfileStringW(L"startup", L"Folder", rootShortcutDir.c_str(), iniFile.c_str());
+				}
+			}
+		}
 		else {
 			int id = LOWORD(wParam);
 			if (menuCommandMap.count(id)) {
-				// Changed function name to match its multi-format capability
 				LaunchItem(menuCommandMap[id]);
 			}
 		}
@@ -137,19 +156,20 @@ void ShowContextMenu(HWND hwnd) {
 	POINT pt;
 	GetCursorPos(&pt);
 	SetForegroundWindow(hwnd);
-	HMENU hMenu = LoadMenu(hInst, MAKEINTRESOURCE(IDR_MENU_TRAY));
-	HMENU hSubMenu = GetSubMenu(hMenu, 0);
-	TrackPopupMenu(hSubMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+
+	HMENU hMenu = CreatePopupMenu();
+
+	// Format text dynamically to explicitly display which target folder is active
+	std::wstring menuText = L"Folder: " + (rootShortcutDir.empty() ? L"[Not Set]" : rootShortcutDir);
+
+	// Append the dynamic settings toggle item followed by your standard exit choice
+	AppendMenuW(hMenu, MF_STRING, ID_SETTINGS_FOLDER, menuText.c_str());
+	AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+	AppendMenuW(hMenu, MF_STRING, ID_SETTINGS_EXIT, L"Exit");
+
+	TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
 	DestroyMenu(hMenu);
 }
-
-#include <vector>
-
-// Define a simple structure to hold our menu entry items
-struct MenuEntryItem {
-	std::wstring name;
-	std::wstring fullPath;
-};
 
 void PopulateMenuFromFolder(HMENU hMenu, const std::wstring& folder, bool recurse) {
 	WIN32_FIND_DATA findData;
@@ -275,4 +295,48 @@ void LaunchItem(const std::wstring& path) {
 			SW_SHOWNORMAL
 		);
 	}
+}
+
+bool PickFolderDialog(HWND hwndOwner, std::wstring& outPath) {
+	IFileOpenDialog* pFileOpen = NULL;
+
+	// Create the FileOpenDialog instance object interface
+	HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER,
+		IID_IFileOpenDialog, (LPVOID*)&pFileOpen);
+
+	if (SUCCEEDED(hr)) {
+		// Set options to restrict selection strictly to folder targets
+		DWORD dwOptions;
+		pFileOpen->GetOptions(&dwOptions);
+		pFileOpen->SetOptions(dwOptions | FOS_PICKFOLDERS);
+
+		// NEW: Try to set the initial starting location to the current INI directory
+		if (!rootShortcutDir.empty() && PathFileExistsW(rootShortcutDir.c_str())) {
+			IShellItem* pInitialFolderItem = NULL;
+			hr = SHCreateItemFromParsingName(rootShortcutDir.c_str(), NULL, IID_PPV_ARGS(&pInitialFolderItem));
+			if (SUCCEEDED(hr)) {
+				// Set both the default folder and current folder parameters
+				pFileOpen->SetFolder(pInitialFolderItem);
+				pInitialFolderItem->Release();
+			}
+		}
+
+		// Present the window viewport to the user
+		hr = pFileOpen->Show(hwndOwner);
+		if (SUCCEEDED(hr)) {
+			IShellItem* pItem = NULL;
+			hr = pFileOpen->GetResult(&pItem);
+			if (SUCCEEDED(hr)) {
+				wchar_t* pszFolderPath = NULL;
+				hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFolderPath);
+				if (SUCCEEDED(hr)) {
+					outPath = pszFolderPath;
+					CoTaskMemFree(pszFolderPath); // Release COM baseline string allocation
+				}
+				pItem->Release();
+			}
+		}
+		pFileOpen->Release();
+	}
+	return SUCCEEDED(hr);
 }

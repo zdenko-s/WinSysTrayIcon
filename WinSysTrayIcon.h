@@ -12,3 +12,5 @@ void ShowAppMenu(HWND hwnd);
 void PopulateMenuFromFolder(HMENU hMenu, const std::wstring& folder, bool recurse);
 void ExecuteShortcut(const std::wstring& path);
 void LaunchItem(const std::wstring& path);
+bool PickFolderDialog(HWND hwndOwner, std::wstring& outPath);
+bool PickFolderDialog(HWND hwndOwner, std::wstring& outPath);
