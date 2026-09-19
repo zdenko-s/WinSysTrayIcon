@@ -16,7 +16,6 @@
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_BASE					2000
 #define ID_SETTINGS_EXIT				3000
-#define ID_SETTINGS_SETTINGS			3001
 #define ID_SETTINGS_FOLDER				3002
 #define IDC_STATIC                      -1
 
